@@ -1,0 +1,184 @@
+pub mod position;
+
+use position::{Point, Span};
+use std::{io, mem, path::PathBuf};
+use thiserror::Error;
+
+fn main() {
+    let mut data = "hello world".to_owned();
+    let span = Span { start: 6, end: 11 };
+    let old_value = data
+        .chars()
+        .skip(span.start)
+        .take(span.end - span.start)
+        .collect::<String>();
+    data.replace_range(span, "meoww");
+    // TODO: update Buffer::replace to take end - start
+}
+
+#[derive(Default)]
+pub struct Buffer {
+    pub data: String,
+    pub lines: Vec<Span>,
+    pub path: Option<PathBuf>,
+    pub cursor: Point,
+}
+
+impl Buffer {
+    pub fn insert_line(&mut self, value: &str, i: usize) {
+        if value.is_empty() {
+            self.lines.insert(i, Span { start: 0, end: 0 });
+            return;
+        }
+
+        self.lines.insert(
+            i,
+            Span {
+                start: 0,
+                end: value.len(),
+            },
+        );
+
+        // self.lines.insert(i, )
+    }
+
+    /// Adds a character to a line
+    pub fn write_char(&mut self, char: char, at: Point) -> Result<()> {
+        let (offset, line) = self.offset(at)?;
+        line.end += 1;
+
+        self.data.insert(offset, char);
+
+        Ok(())
+    }
+
+    /// Removes a character, returing the removed value
+    pub fn remove_char(&mut self, at: Point) -> Result<char> {
+        let (offset, line) = self.offset(at)?;
+        line.end -= 1;
+
+        Ok(self.data.remove(offset))
+    }
+
+    /// Replaces a charater, returing the old value
+    // UNWRAP: we've ensured the index is valid in Self::offset_span
+    pub fn replace_char(&mut self, char: char, at: Point) -> Result<char> {
+        self.replace(char.to_string().as_str(), at)
+            .map(|old| old.chars().nth(0).unwrap())
+    }
+
+    /// Adds to a line
+    pub fn write(&mut self, value: &str, at: Point) -> Result<()> {
+        let (span, line) = self.offset_span(at, value.len())?;
+        line.end += value.len();
+
+        self.data.insert_str(span.start, value);
+
+        Ok(())
+    }
+
+    /// Removes part of a line, returning the removed value
+    pub fn remove(&mut self, at: Point, size: usize) -> Result<String> {
+        let (span, line) = self.offset_span(at, size)?;
+        line.end -= size;
+
+        Ok(span.into_iter().map(|i| self.data.remove(i)).collect())
+    }
+
+    /// Replaces part of a line, returning the old value
+    pub fn replace(&mut self, value: &str, at: Point) -> Result<String> {
+        let (span, _) = self.offset_span(at, value.len())?;
+        let old_value = self
+            .data
+            .chars()
+            .skip(span.start)
+            .take(span.end - span.start)
+            .collect();
+
+        self.data.replace_range(span, value);
+
+        Ok(old_value)
+    }
+
+    /// Gives the character offset from the inner data, along with a mutable reference to the corresponding line span
+    fn offset(&mut self, point: Point) -> Result<(usize, &mut Span)> {
+        let (x, y) = point.into_inner();
+        let starting_offset: usize = (0..y)
+            .map(|i| self.lines.get(i).map(|line| line.end))
+            .sum::<Option<usize>>()
+            .ok_or(Error::OutOfBounds(point))?;
+        let span = self.lines.get_mut(y).ok_or(Error::OutOfBounds(point))?;
+        if x >= span.end {
+            return Err(Error::OutOfBounds(point));
+        }
+
+        Ok((starting_offset + x, span))
+    }
+
+    fn offset_span(&mut self, point: Point, size: usize) -> Result<(Span, &mut Span)> {
+        let (x, y) = point.into_inner();
+        let starting_offset: usize = (0..y)
+            .map(|i| self.lines.get(i).map(|line| line.end))
+            .sum::<Option<usize>>()
+            .ok_or(Error::OutOfBounds(point))?;
+        let span = self.lines.get_mut(y).ok_or(Error::OutOfBounds(point))?;
+        if x + size + 1 > span.end {
+            return Err(Error::OutOfBounds(point));
+        }
+
+        Ok((
+            Span {
+                start: starting_offset + x,
+                end: starting_offset + x + size + 1,
+            },
+            span,
+        ))
+    }
+
+    // fn in_bounds(&self, point: Point) -> bool {
+    //     match self.lines.get(point.y()).map(|line| point.x() <= line.end) {
+    //         Some(true) => true,
+    //         _ => false,
+    //     }
+    // }
+}
+
+impl TryFrom<PathBuf> for Buffer {
+    type Error = Error;
+
+    fn try_from(path: PathBuf) -> Result<Self> {
+        let data = std::fs::read_to_string(&path)?;
+        let lines = data
+            .lines()
+            .map(|line| Span {
+                start: 0,
+                end: line.len(),
+            })
+            .collect();
+
+        Ok(Self {
+            data,
+            lines,
+            path: Some(path),
+            cursor: Point::default(),
+        })
+    }
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error("{0}")]
+    OutOfBounds(Point),
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn works() {
+        // let buffer =
+    }
+}

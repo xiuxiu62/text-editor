@@ -10,6 +10,12 @@ use crate::{
 };
 use std::{fs, path::PathBuf};
 
+// struct LineDescriptor {
+//     pub offset: usize,
+//     pub len: usize,
+//     pub modified: bool,
+// }
+
 /// A text buffer
 #[derive(Debug, Default)]
 pub struct TextBuffer {
@@ -117,6 +123,34 @@ impl TextBuffer {
                 .map(|_| self.data.remove(start))
                 .collect(),
         )
+    }
+
+    /// Gives a vector of strings, joining newline characters for each line
+    pub fn lines(&self) -> Vec<String> {
+        let newline = util::newline();
+        let chars: Vec<char> = self.data.chars().collect();
+
+        self.line_sizes
+            .iter()
+            .fold((vec![], 0), |(mut lines, mut offset), line_size| {
+                let mut line = "".to_owned();
+                if *line_size > 0 {
+                    line.push_str(
+                        chars[offset..offset + line_size]
+                            .iter()
+                            .collect::<String>()
+                            .as_str(),
+                    );
+
+                    offset += line_size;
+                }
+
+                line.push_str(newline);
+                lines.push(line);
+
+                (lines, offset)
+            })
+            .0
     }
 
     /// Inserts a character to a line

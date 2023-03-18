@@ -9,7 +9,7 @@ use crossterm::{
     terminal,
 };
 use std::{
-    cell::{RefCell, RefMut},
+    cell::{Ref, RefCell, RefMut},
     collections::BTreeMap,
     io::{self, Stdout},
     path::PathBuf,
@@ -22,7 +22,7 @@ use tui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     text::Spans,
-    widgets::Paragraph,
+    widgets::{List, ListItem, Paragraph, StatefulWidget},
     Terminal,
 };
 
@@ -47,8 +47,18 @@ type CrossTerminal = Terminal<CrosstermBackend<Stdout>>;
 struct Editor {
     active_buffer_id: usize,
     buffers: BTreeMap<usize, TextBuffer>,
-    terminal: Option<CrossTerminal>,
+    terminal: Option<Rc<RefCell<CrossTerminal>>>,
 }
+
+enum Message {
+    Exit,
+}
+
+// enum BufferMode {
+//     Normal,
+//     Insert,
+//     Visual,
+// }
 
 impl Editor {
     pub fn new() -> text_buffer::Result<Self> {
@@ -74,8 +84,64 @@ impl Editor {
 
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
         terminal.clear()?;
+        self.terminal = Some(Rc::new(RefCell::new(terminal)));
 
-        terminal.draw(|frame| {
+        // self.terminal_mut()?.draw(|frame| {
+        //     let chunks = Layout::default()
+        //         .direction(Direction::Vertical)
+        //         .constraints([Constraint::Percentage(100)])
+        //         .split(frame.size());
+
+        //     let paragraph = Paragraph::new(
+        //         self.get_active()
+        //             .unwrap()
+        //             .lines()
+        //             .into_iter()
+        //             .map(Spans::from)
+        //             .collect::<Vec<Spans>>(),
+        //     );
+
+        //     frame.render_widget(paragraph, chunks[0]);
+        // })?;
+
+        loop {
+            if let Some(message) = self.update()? {
+                match message {
+                    Message::Exit => break,
+                }
+            }
+
+            self.render()?;
+
+            // TODO: implement actual FPS
+            std::thread::sleep(Duration::from_nanos(16_667));
+        }
+
+        Ok(())
+    }
+
+    fn update(&mut self) -> Result<Option<Message>> {
+        let timeout = Duration::from_millis(100);
+        if event::poll(timeout)? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Esc => return Ok(Some(Message::Exit)),
+                    KeyCode::Char(char) => {
+                        let text_buffer = self.get_active_mut().unwrap();
+
+                        text_buffer.insert_char(text_buffer.cursor, char)?;
+                        text_buffer.cursor.set_x(text_buffer.cursor.x() + 1);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn render(&self) -> Result<()> {
+        self.terminal_mut()?.draw(|frame| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(100)])
@@ -93,32 +159,29 @@ impl Editor {
             frame.render_widget(paragraph, chunks[0]);
         })?;
 
-        let timeout = Duration::from_millis(100);
-        loop {
-            if event::poll(timeout)? {
-                if let Event::Key(key) = event::read()? {
-                    if let KeyCode::Esc = key.code {
-                        break;
-                    }
-                }
-            }
-        }
-
-        self.terminal = Some(terminal);
-
         Ok(())
     }
 
-    fn terminal(&self) -> Result<&CrossTerminal> {
-        self.terminal.as_ref().ok_or(Error::Uninitialized)
+    fn terminal(&self) -> Result<Ref<CrossTerminal>> {
+        self.terminal
+            .as_ref()
+            .ok_or(Error::Uninitialized)
+            .map(|terminal| terminal.borrow())
     }
 
-    fn terminal_mut(&mut self) -> Result<&mut CrossTerminal> {
-        self.terminal.as_mut().ok_or(Error::Uninitialized)
+    fn terminal_mut(&self) -> Result<RefMut<CrossTerminal>> {
+        self.terminal
+            .as_ref()
+            .ok_or(Error::Uninitialized)
+            .map(|terminal| terminal.borrow_mut())
     }
 
     fn get_active(&self) -> Option<&TextBuffer> {
         self.buffers.get(&self.active_buffer_id)
+    }
+
+    fn get_active_mut(&mut self) -> Option<&mut TextBuffer> {
+        self.buffers.get_mut(&self.active_buffer_id)
     }
 }
 
@@ -134,27 +197,23 @@ impl Default for Editor {
 
 impl Drop for Editor {
     fn drop(&mut self) {
-        let backend = match self.terminal_mut() {
-            Ok(terminal) => terminal.backend_mut(),
-            // Terminal was never initialized, so we don't need to run the shutdown hook
-            Err(Error::Uninitialized) => return,
-            _ => unreachable!(),
+        // If Err, the terminal wasn't initialized and we don't need to run the shutdown hook
+        if let Ok(mut terminal) = self.terminal_mut() {
+            let handle_error = |result| {
+                if let Err(err) = result {
+                    eprintln!("{err}");
+                }
+            };
+
+            handle_error(execute!(
+                terminal.backend_mut(),
+                terminal::LeaveAlternateScreen,
+                terminal::DisableLineWrap,
+                event::DisableMouseCapture
+            ));
+
+            handle_error(terminal::disable_raw_mode());
         };
-
-        let handle_error = |result| {
-            if let Err(err) = result {
-                eprintln!("{err}");
-            }
-        };
-
-        handle_error(execute!(
-            backend,
-            terminal::LeaveAlternateScreen,
-            terminal::DisableLineWrap,
-            event::DisableMouseCapture
-        ));
-
-        handle_error(terminal::disable_raw_mode());
     }
 }
 
